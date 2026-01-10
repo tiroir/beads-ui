@@ -54,12 +54,18 @@ export function createListView(
   let issues_cache = [];
   /** @type {string[]} */
   let type_filters = [];
+  /** @type {string[]} */
+  let client_filters = [];
+  /** @type {string[]} */
+  let work_filters = [];
   /** @type {string | null} */
   let selected_id = store ? store.getState().selected_id : null;
   /** @type {null | (() => void)} */
   let unsubscribe = null;
   let status_dropdown_open = false;
   let type_dropdown_open = false;
+  let client_dropdown_open = false;
+  let work_dropdown_open = false;
 
   /**
    * Normalize legacy string filter to array format.
@@ -152,6 +158,42 @@ export function createListView(
   };
 
   /**
+   * Toggle a client label filter.
+   *
+   * @param {string} client
+   */
+  const toggleClientFilter = (client) => {
+    if (client_filters.includes(client)) {
+      client_filters = client_filters.filter((c) => c !== client);
+    } else {
+      client_filters = [...client_filters, client];
+    }
+    log('client toggle %s -> %o', client, client_filters);
+    if (store) {
+      store.setState({ filters: { client: client_filters } });
+    }
+    doRender();
+  };
+
+  /**
+   * Toggle a work label filter.
+   *
+   * @param {string} work
+   */
+  const toggleWorkFilter = (work) => {
+    if (work_filters.includes(work)) {
+      work_filters = work_filters.filter((w) => w !== work);
+    } else {
+      work_filters = [...work_filters, work];
+    }
+    log('work toggle %s -> %o', work, work_filters);
+    if (store) {
+      store.setState({ filters: { work: work_filters } });
+    }
+    doRender();
+  };
+
+  /**
    * Toggle status dropdown open/closed.
    *
    * @param {Event} e
@@ -160,6 +202,8 @@ export function createListView(
     e.stopPropagation();
     status_dropdown_open = !status_dropdown_open;
     type_dropdown_open = false;
+    client_dropdown_open = false;
+    work_dropdown_open = false;
     doRender();
   };
 
@@ -172,6 +216,36 @@ export function createListView(
     e.stopPropagation();
     type_dropdown_open = !type_dropdown_open;
     status_dropdown_open = false;
+    client_dropdown_open = false;
+    work_dropdown_open = false;
+    doRender();
+  };
+
+  /**
+   * Toggle client dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  const toggleClientDropdown = (e) => {
+    e.stopPropagation();
+    client_dropdown_open = !client_dropdown_open;
+    status_dropdown_open = false;
+    type_dropdown_open = false;
+    work_dropdown_open = false;
+    doRender();
+  };
+
+  /**
+   * Toggle work dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  const toggleWorkDropdown = (e) => {
+    e.stopPropagation();
+    work_dropdown_open = !work_dropdown_open;
+    status_dropdown_open = false;
+    type_dropdown_open = false;
+    client_dropdown_open = false;
     doRender();
   };
 
@@ -196,11 +270,57 @@ export function createListView(
       status_filters = normalizeStatusFilter(s.filters.status);
       search_text = s.filters.search || '';
       type_filters = normalizeTypeFilter(s.filters.type);
+      client_filters = Array.isArray(s.filters.client) ? s.filters.client : [];
+      work_filters = Array.isArray(s.filters.work) ? s.filters.work : [];
     }
   }
   // Initial values are reflected via bound `.value` in the template
   // Compose helpers: centralize membership + entity selection + sorting
   const selectors = issue_stores ? createListSelectors(issue_stores) : null;
+
+  /**
+   * Extract unique label values by prefix from issues cache.
+   *
+   * @param {string} prefix - Label prefix (e.g., 'client:', 'work:')
+   * @returns {string[]} - Sorted unique values without the prefix
+   */
+  function getLabelsByPrefix(prefix) {
+    const values = new Set();
+    for (const issue of issues_cache) {
+      if (Array.isArray(issue.labels)) {
+        for (const label of issue.labels) {
+          if (typeof label === 'string' && label.startsWith(prefix)) {
+            values.add(label.slice(prefix.length));
+          }
+        }
+      }
+    }
+    return Array.from(values).sort();
+  }
+
+  /**
+   * Check if an issue matches the selected label filters.
+   * Uses AND logic: issue must have ALL selected labels.
+   *
+   * @param {Issue} issue
+   * @returns {boolean}
+   */
+  function matchesLabelFilters(issue) {
+    const labels = Array.isArray(issue.labels) ? issue.labels : [];
+    // Check client filters
+    for (const client of client_filters) {
+      if (!labels.includes(`client:${client}`)) {
+        return false;
+      }
+    }
+    // Check work filters
+    for (const work of work_filters) {
+      if (!labels.includes(`work:${work}`)) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   /**
    * Build lit-html template for the list view.
@@ -224,6 +344,10 @@ export function createListView(
       filtered = filtered.filter((it) =>
         type_filters.includes(String(it.issue_type || ''))
       );
+    }
+    // Filter by labels (AND logic)
+    if (client_filters.length > 0 || work_filters.length > 0) {
+      filtered = filtered.filter(matchesLabelFilters);
     }
     // Sorting: closed list is a special case → sort by closed_at desc only
     if (status_filters.length === 1 && status_filters[0] === 'closed') {
@@ -275,6 +399,64 @@ export function createListView(
             )}
           </div>
         </div>
+        ${getLabelsByPrefix('client:').length > 0
+          ? html`
+              <div
+                class="filter-dropdown ${client_dropdown_open ? 'is-open' : ''}"
+              >
+                <button
+                  class="filter-dropdown__trigger"
+                  @click=${toggleClientDropdown}
+                >
+                  ${getDropdownDisplayText(client_filters, 'Client', (c) => c)}
+                  <span class="filter-dropdown__arrow">▾</span>
+                </button>
+                <div class="filter-dropdown__menu">
+                  ${getLabelsByPrefix('client:').map(
+                    (c) => html`
+                      <label class="filter-dropdown__option">
+                        <input
+                          type="checkbox"
+                          .checked=${client_filters.includes(c)}
+                          @change=${() => toggleClientFilter(c)}
+                        />
+                        ${c}
+                      </label>
+                    `
+                  )}
+                </div>
+              </div>
+            `
+          : ''}
+        ${getLabelsByPrefix('work:').length > 0
+          ? html`
+              <div
+                class="filter-dropdown ${work_dropdown_open ? 'is-open' : ''}"
+              >
+                <button
+                  class="filter-dropdown__trigger"
+                  @click=${toggleWorkDropdown}
+                >
+                  ${getDropdownDisplayText(work_filters, 'Work', (w) => w)}
+                  <span class="filter-dropdown__arrow">▾</span>
+                </button>
+                <div class="filter-dropdown__menu">
+                  ${getLabelsByPrefix('work:').map(
+                    (w) => html`
+                      <label class="filter-dropdown__option">
+                        <input
+                          type="checkbox"
+                          .checked=${work_filters.includes(w)}
+                          @change=${() => toggleWorkFilter(w)}
+                        />
+                        ${w}
+                      </label>
+                    `
+                  )}
+                </div>
+              </div>
+            `
+          : ''}
         <input
           type="search"
           placeholder="Search…"
@@ -511,9 +693,16 @@ export function createListView(
   const clickOutsideHandler = (e) => {
     const target = /** @type {HTMLElement|null} */ (e.target);
     if (target && !target.closest('.filter-dropdown')) {
-      if (status_dropdown_open || type_dropdown_open) {
+      if (
+        status_dropdown_open ||
+        type_dropdown_open ||
+        client_dropdown_open ||
+        work_dropdown_open
+      ) {
         status_dropdown_open = false;
         type_dropdown_open = false;
+        client_dropdown_open = false;
+        work_dropdown_open = false;
         doRender();
       }
     }
@@ -549,6 +738,24 @@ export function createListView(
           JSON.stringify(next_type_arr) !== JSON.stringify(type_filters);
         if (type_changed) {
           type_filters = next_type_arr;
+          needs_render = true;
+        }
+        // Check client filter changes
+        const next_client = Array.isArray(s.filters.client)
+          ? s.filters.client
+          : [];
+        const client_changed =
+          JSON.stringify(next_client) !== JSON.stringify(client_filters);
+        if (client_changed) {
+          client_filters = next_client;
+          needs_render = true;
+        }
+        // Check work filter changes
+        const next_work = Array.isArray(s.filters.work) ? s.filters.work : [];
+        const work_changed =
+          JSON.stringify(next_work) !== JSON.stringify(work_filters);
+        if (work_changed) {
+          work_filters = next_work;
           needs_render = true;
         }
         if (needs_render) {

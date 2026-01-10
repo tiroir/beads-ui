@@ -7,29 +7,61 @@ const log = debug('list-adapters');
  * Build concrete `bd` CLI args for a subscription type + params.
  * Always includes `--json` for parseable output.
  *
- * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
+ * @param {{ type: string, params?: Record<string, string | number | boolean | string[]> }} spec
  * @returns {string[]}
  */
 export function mapSubscriptionToBdArgs(spec) {
   const t = String(spec.type);
+  const params = spec.params || {};
+
+  /**
+   * Append label filters to args array (AND logic via --label).
+   * @param {string[]} args
+   */
+  function appendLabelFilters(args) {
+    // Support labels as comma-separated string or array
+    const labels = params.labels;
+    if (labels) {
+      const labelList = Array.isArray(labels)
+        ? labels
+        : String(labels)
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+      if (labelList.length > 0) {
+        args.push('--label', labelList.join(','));
+      }
+    }
+  }
+
   switch (t) {
     case 'all-issues': {
-      return ['list', '--json'];
+      const args = ['list', '--json'];
+      appendLabelFilters(args);
+      return args;
     }
     case 'epics': {
       return ['epic', 'status', '--json'];
     }
     case 'blocked-issues': {
-      return ['blocked', '--json'];
+      const args = ['blocked', '--json'];
+      appendLabelFilters(args);
+      return args;
     }
     case 'ready-issues': {
-      return ['ready', '--limit', '1000', '--json'];
+      const args = ['ready', '--limit', '1000', '--json'];
+      appendLabelFilters(args);
+      return args;
     }
     case 'in-progress-issues': {
-      return ['list', '--json', '--status', 'in_progress'];
+      const args = ['list', '--json', '--status', 'in_progress'];
+      appendLabelFilters(args);
+      return args;
     }
     case 'closed-issues': {
-      return ['list', '--json', '--status', 'closed'];
+      const args = ['list', '--json', '--status', 'closed'];
+      appendLabelFilters(args);
+      return args;
     }
     case 'issue-detail': {
       const p = spec.params || {};

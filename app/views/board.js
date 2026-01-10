@@ -69,8 +69,164 @@ export function createBoardView(
   let list_closed = [];
   /** @type {IssueLite[]} */
   let list_closed_raw = [];
+  /** @type {IssueLite[]} */
+  let all_issues_cache = [];
+  /** @type {string[]} */
+  let client_filters = [];
+  /** @type {string[]} */
+  let work_filters = [];
+  let client_dropdown_open = false;
+  let work_dropdown_open = false;
   // Centralized selection helpers
   const selectors = issueStores ? createListSelectors(issueStores) : null;
+
+  // Initialize label filters from store
+  if (store) {
+    const s = store.getState();
+    if (s && s.filters && typeof s.filters === 'object') {
+      client_filters = Array.isArray(s.filters.client) ? s.filters.client : [];
+      work_filters = Array.isArray(s.filters.work) ? s.filters.work : [];
+    }
+  }
+
+  // Subscribe to store for filter changes from other views
+  if (store && store.subscribe) {
+    store.subscribe((s) => {
+      if (s && s.filters && typeof s.filters === 'object') {
+        const next_client = Array.isArray(s.filters.client)
+          ? s.filters.client
+          : [];
+        const next_work = Array.isArray(s.filters.work) ? s.filters.work : [];
+        const client_changed =
+          JSON.stringify(next_client) !== JSON.stringify(client_filters);
+        const work_changed =
+          JSON.stringify(next_work) !== JSON.stringify(work_filters);
+        if (client_changed || work_changed) {
+          client_filters = next_client;
+          work_filters = next_work;
+          refreshFromStores();
+        }
+      }
+    });
+  }
+
+  /**
+   * Extract unique label values by prefix from all issues cache.
+   *
+   * @param {string} prefix - Label prefix (e.g., 'client:', 'work:')
+   * @returns {string[]} - Sorted unique values without the prefix
+   */
+  function getLabelsByPrefix(prefix) {
+    const values = new Set();
+    for (const issue of all_issues_cache) {
+      const labels = /** @type {any} */ (issue).labels;
+      if (Array.isArray(labels)) {
+        for (const label of labels) {
+          if (typeof label === 'string' && label.startsWith(prefix)) {
+            values.add(label.slice(prefix.length));
+          }
+        }
+      }
+    }
+    return Array.from(values).sort();
+  }
+
+  /**
+   * Check if an issue matches the selected label filters.
+   * Uses AND logic: issue must have ALL selected labels.
+   *
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function matchesLabelFilters(issue) {
+    const labels = Array.isArray(/** @type {any} */ (issue).labels)
+      ? /** @type {string[]} */ (/** @type {any} */ (issue).labels)
+      : [];
+    for (const client of client_filters) {
+      if (!labels.includes(`client:${client}`)) {
+        return false;
+      }
+    }
+    for (const work of work_filters) {
+      if (!labels.includes(`work:${work}`)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Toggle a client label filter.
+   *
+   * @param {string} client
+   */
+  function toggleClientFilter(client) {
+    if (client_filters.includes(client)) {
+      client_filters = client_filters.filter((c) => c !== client);
+    } else {
+      client_filters = [...client_filters, client];
+    }
+    log('client toggle %s -> %o', client, client_filters);
+    if (store) {
+      store.setState({ filters: { client: client_filters } });
+    }
+    refreshFromStores();
+  }
+
+  /**
+   * Toggle a work label filter.
+   *
+   * @param {string} work
+   */
+  function toggleWorkFilter(work) {
+    if (work_filters.includes(work)) {
+      work_filters = work_filters.filter((w) => w !== work);
+    } else {
+      work_filters = [...work_filters, work];
+    }
+    log('work toggle %s -> %o', work, work_filters);
+    if (store) {
+      store.setState({ filters: { work: work_filters } });
+    }
+    refreshFromStores();
+  }
+
+  /**
+   * Toggle client dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  function toggleClientDropdown(e) {
+    e.stopPropagation();
+    client_dropdown_open = !client_dropdown_open;
+    work_dropdown_open = false;
+    doRender();
+  }
+
+  /**
+   * Toggle work dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  function toggleWorkDropdown(e) {
+    e.stopPropagation();
+    work_dropdown_open = !work_dropdown_open;
+    client_dropdown_open = false;
+    doRender();
+  }
+
+  /**
+   * Get display text for dropdown trigger.
+   *
+   * @param {string[]} selected
+   * @param {string} label
+   * @returns {string}
+   */
+  function getDropdownDisplayText(selected, label) {
+    if (selected.length === 0) return `${label}: Any`;
+    if (selected.length === 1) return `${label}: ${selected[0]}`;
+    return `${label} (${selected.length})`;
+  }
 
   /**
    * Closed column filter mode.
@@ -94,7 +250,79 @@ export function createBoardView(
   }
 
   function template() {
+    const client_labels = getLabelsByPrefix('client:');
+    const work_labels = getLabelsByPrefix('work:');
+    const has_filters = client_labels.length > 0 || work_labels.length > 0;
+
     return html`
+      ${has_filters
+        ? html`
+            <div class="panel__header board-filters">
+              ${client_labels.length > 0
+                ? html`
+                    <div
+                      class="filter-dropdown ${client_dropdown_open
+                        ? 'is-open'
+                        : ''}"
+                    >
+                      <button
+                        class="filter-dropdown__trigger"
+                        @click=${toggleClientDropdown}
+                      >
+                        ${getDropdownDisplayText(client_filters, 'Client')}
+                        <span class="filter-dropdown__arrow">▾</span>
+                      </button>
+                      <div class="filter-dropdown__menu">
+                        ${client_labels.map(
+                          (c) => html`
+                            <label class="filter-dropdown__option">
+                              <input
+                                type="checkbox"
+                                .checked=${client_filters.includes(c)}
+                                @change=${() => toggleClientFilter(c)}
+                              />
+                              ${c}
+                            </label>
+                          `
+                        )}
+                      </div>
+                    </div>
+                  `
+                : ''}
+              ${work_labels.length > 0
+                ? html`
+                    <div
+                      class="filter-dropdown ${work_dropdown_open
+                        ? 'is-open'
+                        : ''}"
+                    >
+                      <button
+                        class="filter-dropdown__trigger"
+                        @click=${toggleWorkDropdown}
+                      >
+                        ${getDropdownDisplayText(work_filters, 'Work')}
+                        <span class="filter-dropdown__arrow">▾</span>
+                      </button>
+                      <div class="filter-dropdown__menu">
+                        ${work_labels.map(
+                          (w) => html`
+                            <label class="filter-dropdown__option">
+                              <input
+                                type="checkbox"
+                                .checked=${work_filters.includes(w)}
+                                @change=${() => toggleWorkFilter(w)}
+                              />
+                              ${w}
+                            </label>
+                          `
+                        )}
+                      </div>
+                    </div>
+                  `
+                : ''}
+            </div>
+          `
+        : ''}
       <div class="panel__body board-root">
         ${columnTemplate('Blocked', 'blocked-col', list_blocked)}
         ${columnTemplate('Ready', 'ready-col', list_ready)}
@@ -599,10 +827,24 @@ export function createBoardView(
         const in_prog_ids = new Set(in_progress.map((i) => i.id));
         const ready = ready_raw.filter((i) => !in_prog_ids.has(i.id));
 
-        list_ready = ready;
-        list_blocked = blocked;
-        list_in_progress = in_progress;
-        list_closed_raw = closed;
+        // Build all_issues_cache for label extraction
+        all_issues_cache = [...in_progress, ...blocked, ...ready, ...closed];
+
+        // Apply label filters if any are selected
+        const has_label_filters =
+          client_filters.length > 0 || work_filters.length > 0;
+        list_ready = has_label_filters
+          ? ready.filter(matchesLabelFilters)
+          : ready;
+        list_blocked = has_label_filters
+          ? blocked.filter(matchesLabelFilters)
+          : blocked;
+        list_in_progress = has_label_filters
+          ? in_progress.filter(matchesLabelFilters)
+          : in_progress;
+        list_closed_raw = has_label_filters
+          ? closed.filter(matchesLabelFilters)
+          : closed;
       }
       applyClosedFilter();
       doRender();

@@ -630,7 +630,8 @@ export function bootstrap(root_element) {
       data,
       (id) => router.gotoIssue(id),
       subscriptions,
-      sub_issue_stores
+      sub_issue_stores,
+      store
     );
     const board_view = createBoardView(
       board_root,

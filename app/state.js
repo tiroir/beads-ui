@@ -8,7 +8,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ status: StatusFilter, search: string, type: string }} Filters
+ * @typedef {{ status: StatusFilter, search: string, type: string, client: string[], work: string[] }} Filters
  */
 
 /**
@@ -57,7 +57,11 @@ export function createStore(initial = {}) {
       status: initial.filters?.status ?? 'all',
       search: initial.filters?.search ?? '',
       type:
-        typeof initial.filters?.type === 'string' ? initial.filters?.type : ''
+        typeof initial.filters?.type === 'string' ? initial.filters?.type : '',
+      client: Array.isArray(initial.filters?.client)
+        ? initial.filters.client
+        : [],
+      work: Array.isArray(initial.filters?.work) ? initial.filters.work : []
     },
     board: {
       closed_filter:
@@ -117,12 +121,20 @@ export function createStore(initial = {}) {
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
         next.workspace.available.length !== state.workspace.available.length;
+      const client_changed =
+        JSON.stringify(next.filters.client) !==
+        JSON.stringify(state.filters.client);
+      const work_changed =
+        JSON.stringify(next.filters.work) !==
+        JSON.stringify(state.filters.work);
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&
         next.filters.status === state.filters.status &&
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
+        !client_changed &&
+        !work_changed &&
         next.board.closed_filter === state.board.closed_filter &&
         !workspace_changed
       ) {

@@ -20,13 +20,15 @@ import { createIssueRowRenderer } from './issue-row.js';
  * @param {(id: string) => void} goto_issue - Navigate to issue detail.
  * @param {{ subscribeList: (client_id: string, spec: { type: string, params?: Record<string, string|number|boolean> }) => Promise<() => Promise<void>>, selectors: { getIds: (client_id: string) => string[], count?: (client_id: string) => number } }} [subscriptions]
  * @param {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issue_stores]
+ * @param {{ getState: () => any, setState: (patch: any) => void, subscribe?: (fn: (s:any)=>void)=>()=>void }} [store]
  */
 export function createEpicsView(
   mount_element,
   data,
   goto_issue,
   subscriptions = undefined,
-  issue_stores = undefined
+  issue_stores = undefined,
+  store = undefined
 ) {
   /** @type {any[]} */
   let groups = [];
@@ -36,6 +38,164 @@ export function createEpicsView(
   const loading = new Set();
   /** @type {Map<string, () => Promise<void>>} */
   const epic_unsubs = new Map();
+  /** @type {IssueLite[]} */
+  let all_issues_cache = [];
+  /** @type {string[]} */
+  let client_filters = [];
+  /** @type {string[]} */
+  let work_filters = [];
+  let client_dropdown_open = false;
+  let work_dropdown_open = false;
+
+  // Initialize label filters from store
+  if (store) {
+    const s = store.getState();
+    if (s && s.filters && typeof s.filters === 'object') {
+      client_filters = Array.isArray(s.filters.client) ? s.filters.client : [];
+      work_filters = Array.isArray(s.filters.work) ? s.filters.work : [];
+    }
+  }
+
+  // Subscribe to store for filter changes from other views
+  if (store && store.subscribe) {
+    store.subscribe((s) => {
+      if (s && s.filters && typeof s.filters === 'object') {
+        const next_client = Array.isArray(s.filters.client)
+          ? s.filters.client
+          : [];
+        const next_work = Array.isArray(s.filters.work) ? s.filters.work : [];
+        const client_changed =
+          JSON.stringify(next_client) !== JSON.stringify(client_filters);
+        const work_changed =
+          JSON.stringify(next_work) !== JSON.stringify(work_filters);
+        if (client_changed || work_changed) {
+          client_filters = next_client;
+          work_filters = next_work;
+          groups = buildGroupsFromSnapshot();
+          doRender();
+        }
+      }
+    });
+  }
+
+  /**
+   * Extract unique label values by prefix from all issues cache.
+   *
+   * @param {string} prefix - Label prefix (e.g., 'client:', 'work:')
+   * @returns {string[]} - Sorted unique values without the prefix
+   */
+  function getLabelsByPrefix(prefix) {
+    const values = new Set();
+    for (const issue of all_issues_cache) {
+      const labels = /** @type {any} */ (issue).labels;
+      if (Array.isArray(labels)) {
+        for (const label of labels) {
+          if (typeof label === 'string' && label.startsWith(prefix)) {
+            values.add(label.slice(prefix.length));
+          }
+        }
+      }
+    }
+    return Array.from(values).sort();
+  }
+
+  /**
+   * Check if an issue matches the selected label filters.
+   * Uses AND logic: issue must have ALL selected labels.
+   *
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function matchesLabelFilters(issue) {
+    const labels = Array.isArray(/** @type {any} */ (issue).labels)
+      ? /** @type {string[]} */ (/** @type {any} */ (issue).labels)
+      : [];
+    for (const client of client_filters) {
+      if (!labels.includes(`client:${client}`)) {
+        return false;
+      }
+    }
+    for (const work of work_filters) {
+      if (!labels.includes(`work:${work}`)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Toggle a client label filter.
+   *
+   * @param {string} client
+   */
+  function toggleClientFilter(client) {
+    if (client_filters.includes(client)) {
+      client_filters = client_filters.filter((c) => c !== client);
+    } else {
+      client_filters = [...client_filters, client];
+    }
+    if (store) {
+      store.setState({ filters: { client: client_filters } });
+    }
+    groups = buildGroupsFromSnapshot();
+    doRender();
+  }
+
+  /**
+   * Toggle a work label filter.
+   *
+   * @param {string} work
+   */
+  function toggleWorkFilter(work) {
+    if (work_filters.includes(work)) {
+      work_filters = work_filters.filter((w) => w !== work);
+    } else {
+      work_filters = [...work_filters, work];
+    }
+    if (store) {
+      store.setState({ filters: { work: work_filters } });
+    }
+    groups = buildGroupsFromSnapshot();
+    doRender();
+  }
+
+  /**
+   * Toggle client dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  function toggleClientDropdown(e) {
+    e.stopPropagation();
+    client_dropdown_open = !client_dropdown_open;
+    work_dropdown_open = false;
+    doRender();
+  }
+
+  /**
+   * Toggle work dropdown open/closed.
+   *
+   * @param {Event} e
+   */
+  function toggleWorkDropdown(e) {
+    e.stopPropagation();
+    work_dropdown_open = !work_dropdown_open;
+    client_dropdown_open = false;
+    doRender();
+  }
+
+  /**
+   * Get display text for dropdown trigger.
+   *
+   * @param {string[]} selected
+   * @param {string} label
+   * @returns {string}
+   */
+  function getDropdownDisplayText(selected, label) {
+    if (selected.length === 0) return `${label}: Any`;
+    if (selected.length === 1) return `${label}: ${selected[0]}`;
+    return `${label} (${selected.length})`;
+  }
+
   // Centralized selection helpers
   const selectors = issue_stores ? createListSelectors(issue_stores) : null;
   // Live re-render on pushes: recompute groups when stores change
@@ -68,10 +228,154 @@ export function createEpicsView(
   }
 
   function template() {
+    const client_labels = getLabelsByPrefix('client:');
+    const work_labels = getLabelsByPrefix('work:');
+    const has_filters = client_labels.length > 0 || work_labels.length > 0;
+
     if (!groups.length) {
-      return html`<div class="panel__header muted">No epics found.</div>`;
+      return html`
+        ${has_filters
+          ? html`
+              <div class="panel__header epics-filters">
+                ${client_labels.length > 0
+                  ? html`
+                      <div
+                        class="filter-dropdown ${client_dropdown_open
+                          ? 'is-open'
+                          : ''}"
+                      >
+                        <button
+                          class="filter-dropdown__trigger"
+                          @click=${toggleClientDropdown}
+                        >
+                          ${getDropdownDisplayText(client_filters, 'Client')}
+                          <span class="filter-dropdown__arrow">▾</span>
+                        </button>
+                        <div class="filter-dropdown__menu">
+                          ${client_labels.map(
+                            (c) => html`
+                              <label class="filter-dropdown__option">
+                                <input
+                                  type="checkbox"
+                                  .checked=${client_filters.includes(c)}
+                                  @change=${() => toggleClientFilter(c)}
+                                />
+                                ${c}
+                              </label>
+                            `
+                          )}
+                        </div>
+                      </div>
+                    `
+                  : ''}
+                ${work_labels.length > 0
+                  ? html`
+                      <div
+                        class="filter-dropdown ${work_dropdown_open
+                          ? 'is-open'
+                          : ''}"
+                      >
+                        <button
+                          class="filter-dropdown__trigger"
+                          @click=${toggleWorkDropdown}
+                        >
+                          ${getDropdownDisplayText(work_filters, 'Work')}
+                          <span class="filter-dropdown__arrow">▾</span>
+                        </button>
+                        <div class="filter-dropdown__menu">
+                          ${work_labels.map(
+                            (w) => html`
+                              <label class="filter-dropdown__option">
+                                <input
+                                  type="checkbox"
+                                  .checked=${work_filters.includes(w)}
+                                  @change=${() => toggleWorkFilter(w)}
+                                />
+                                ${w}
+                              </label>
+                            `
+                          )}
+                        </div>
+                      </div>
+                    `
+                  : ''}
+              </div>
+            `
+          : ''}
+        <div class="panel__header muted">No epics found.</div>
+      `;
     }
-    return html`${groups.map((g) => groupTemplate(g))}`;
+    return html`
+      ${has_filters
+        ? html`
+            <div class="panel__header epics-filters">
+              ${client_labels.length > 0
+                ? html`
+                    <div
+                      class="filter-dropdown ${client_dropdown_open
+                        ? 'is-open'
+                        : ''}"
+                    >
+                      <button
+                        class="filter-dropdown__trigger"
+                        @click=${toggleClientDropdown}
+                      >
+                        ${getDropdownDisplayText(client_filters, 'Client')}
+                        <span class="filter-dropdown__arrow">▾</span>
+                      </button>
+                      <div class="filter-dropdown__menu">
+                        ${client_labels.map(
+                          (c) => html`
+                            <label class="filter-dropdown__option">
+                              <input
+                                type="checkbox"
+                                .checked=${client_filters.includes(c)}
+                                @change=${() => toggleClientFilter(c)}
+                              />
+                              ${c}
+                            </label>
+                          `
+                        )}
+                      </div>
+                    </div>
+                  `
+                : ''}
+              ${work_labels.length > 0
+                ? html`
+                    <div
+                      class="filter-dropdown ${work_dropdown_open
+                        ? 'is-open'
+                        : ''}"
+                    >
+                      <button
+                        class="filter-dropdown__trigger"
+                        @click=${toggleWorkDropdown}
+                      >
+                        ${getDropdownDisplayText(work_filters, 'Work')}
+                        <span class="filter-dropdown__arrow">▾</span>
+                      </button>
+                      <div class="filter-dropdown__menu">
+                        ${work_labels.map(
+                          (w) => html`
+                            <label class="filter-dropdown__option">
+                              <input
+                                type="checkbox"
+                                .checked=${work_filters.includes(w)}
+                                @change=${() => toggleWorkFilter(w)}
+                              />
+                              ${w}
+                            </label>
+                          `
+                        )}
+                      </div>
+                    </div>
+                  `
+                : ''}
+            </div>
+          `
+        : ''}
+      ${groups.map((g) => groupTemplate(g))}
+    `;
   }
 
   /**
@@ -82,7 +386,13 @@ export function createEpicsView(
     const id = String(epic.id || '');
     const is_open = expanded.has(id);
     // Compose children via selectors
-    const list = selectors ? selectors.selectEpicChildren(id) : [];
+    const raw_list = selectors ? selectors.selectEpicChildren(id) : [];
+    // Apply label filters if any are selected
+    const has_label_filters =
+      client_filters.length > 0 || work_filters.length > 0;
+    const list = has_label_filters
+      ? raw_list.filter(matchesLabelFilters)
+      : raw_list;
     const is_loading = loading.has(id);
     return html`
       <div class="epic-group" data-epic-id=${id}>
@@ -227,10 +537,15 @@ export function createEpicsView(
           )
         : [];
     const next_groups = [];
+    /** @type {IssueLite[]} */
+    const all_issues = [];
     for (const epic of epic_entities) {
       const dependents = Array.isArray(/** @type {any} */ (epic).dependents)
         ? /** @type {any[]} */ (/** @type {any} */ (epic).dependents)
         : [];
+      // Collect all issues for label extraction
+      all_issues.push(epic);
+      all_issues.push(...dependents);
       // Prefer explicit counters when provided by server; otherwise derive
       const has_total = Number.isFinite(
         /** @type {any} */ (epic).total_children
@@ -257,6 +572,8 @@ export function createEpicsView(
         closed_children: closed
       });
     }
+    // Update cache for label extraction
+    all_issues_cache = all_issues;
     return next_groups;
   }
 
