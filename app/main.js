@@ -238,6 +238,10 @@ export function bootstrap(root_element) {
           window.localStorage.setItem('beads-ui.workspace', workspace_path);
           // Clear and resubscribe if workspace actually changed
           if (result.changed) {
+            // Reset label filters - they're workspace-specific
+            store.setState({
+              filters: { client: [], work: [] }
+            });
             await clearAndResubscribe();
             showToast(
               'Switched to ' + getProjectName(workspace_path),
@@ -310,7 +314,9 @@ export function bootstrap(root_element) {
     client.on('workspace-changed', (payload) => {
       log('workspace-changed event: %o', payload);
       if (payload && payload.root_dir) {
+        // Reset label filters - they're workspace-specific
         store.setState({
+          filters: { client: [], work: [] },
           workspace: {
             current: {
               path: payload.root_dir,
