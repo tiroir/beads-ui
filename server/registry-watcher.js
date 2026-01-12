@@ -40,6 +40,43 @@ export function getInMemoryWorkspaces() {
 }
 
 /**
+ * Discover beads workspaces by scanning common project directories.
+ * Looks for .beads/beads.db files in ~/Projects subdirectories.
+ *
+ * @returns {Array<{ path: string, database: string, pid: null, version: string }>}
+ */
+export function discoverWorkspaces() {
+  const projectsDir = path.join(os.homedir(), 'Projects');
+  const discovered = [];
+
+  try {
+    if (!fs.existsSync(projectsDir)) {
+      return [];
+    }
+
+    const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const beadsDb = path.join(projectsDir, entry.name, '.beads', 'beads.db');
+      if (fs.existsSync(beadsDb)) {
+        discovered.push({
+          path: path.join(projectsDir, entry.name),
+          database: beadsDb,
+          pid: null,
+          version: 'discovered'
+        });
+      }
+    }
+  } catch (err) {
+    log('error scanning for workspaces: %o', err);
+  }
+
+  return discovered;
+}
+
+/**
  * @typedef {Object} RegistryEntry
  * @property {string} workspace_path
  * @property {string} socket_path
@@ -107,10 +144,10 @@ export function findWorkspaceEntry(root_dir) {
 }
 
 /**
- * Get all available workspaces from both the file-based registry and
- * dynamically registered in-memory workspaces.
+ * Get all available workspaces from the file-based registry, dynamically
+ * registered in-memory workspaces, and auto-discovered workspaces.
  *
- * @returns {Array<{ path: string, database: string, pid: number, version: string }>}
+ * @returns {Array<{ path: string, database: string, pid: number | null, version: string }>}
  */
 export function getAvailableWorkspaces() {
   const entries = readRegistry();
@@ -121,13 +158,21 @@ export function getAvailableWorkspaces() {
     version: entry.version
   }));
 
-  // Merge in-memory workspaces, avoiding duplicates by path
+  // Track seen paths to avoid duplicates
   const seen = new Set(fileWorkspaces.map((w) => path.resolve(w.path)));
+
+  // Add in-memory workspaces (registry takes precedence)
   const inMemory = getInMemoryWorkspaces().filter(
     (w) => !seen.has(path.resolve(w.path))
   );
+  inMemory.forEach((w) => seen.add(path.resolve(w.path)));
 
-  return [...fileWorkspaces, ...inMemory];
+  // Add discovered workspaces (lowest priority)
+  const discovered = discoverWorkspaces().filter(
+    (w) => !seen.has(path.resolve(w.path))
+  );
+
+  return [...fileWorkspaces, ...inMemory, ...discovered];
 }
 
 /**
